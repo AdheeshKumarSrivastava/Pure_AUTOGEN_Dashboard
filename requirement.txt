@@ -1,0 +1,13 @@
+streamlit>=1.32
+pandas>=2.0
+numpy>=1.24
+sqlalchemy>=2.0
+pyodbc>=5.0
+python-dotenv>=1.0
+sqlparse>=0.5
+pydantic>=2.6
+autogen-agentchat>=0.4.0
+autogen-ext[ollama]>=0.4.0
+autogen-core>=0.4.0
+fix-busted-json
+ollama
