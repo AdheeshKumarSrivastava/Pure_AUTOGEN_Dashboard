@@ -12,7 +12,7 @@ import pandas as pd
 
 from team_factory import build_team
 from db import build_engine, list_tables, get_columns, get_row_count, sample_table
-from memory_store import MemoryStore, safe_json_dumps  # <-- IMPORTANT
+from memory_store import MemoryStore, safe_json_dumps  
 from prompts import STEPS
 from table_describer import build_table_description_prompt
 # New imports for structured execution
@@ -162,23 +162,27 @@ Rules:
 
 
 
-def enrich_tables_with_descriptions(profile: Dict[str, Any], team) -> Dict[str, Any]:
+async def enrich_tables_with_descriptions(profile: Dict[str, Any], team) -> Dict[str, Any]:
     for table in profile["tables"]:
         if "table_description" in table:
-            continue  # already generated
+            continue
 
         prompt = build_table_description_prompt(table)
 
-        # Use the SAME team / model
-        response = team.run(task=prompt)
+        # ✅ IMPORTANT: await team.run
+        response = await team.run(task=prompt)
 
-        desc = parse_llm_json(response,TableDescription, dict)
+        # response might be message object
+        if not isinstance(response, str):
+            response = getattr(response, "content", None) or str(response)
 
-        table["table_description"] = desc["description"]
-        table["business_meaning"] = desc["business_meaning"]
-        table["important_columns"] = desc["important_columns"]
-        table["typical_joins"] = desc["typical_joins"]
-        table["dashboard_use_cases"] = desc["dashboard_use_cases"]
+        desc = parse_llm_json(response, TableDescription).model_dump()
+
+        table["table_description"] = desc.get("description", "")
+        table["business_meaning"] = desc.get("business_meaning", "")
+        table["important_columns"] = desc.get("important_columns", [])
+        table["typical_joins"] = desc.get("typical_joins", [])
+        table["dashboard_use_cases"] = desc.get("dashboard_use_cases", [])
 
     return profile
 
@@ -192,24 +196,27 @@ left, right = st.columns([0.52, 0.48], gap="large")
 
 with left:
     st.subheader("1) Connection & DB Scan")
-    st.caption("Secrets must be in .env. Do NOT hardcode passwords.")
 
     if st.button("Scan DB (schema + samples)", type="primary"):
         try:
-            with st.spinner("Scanning DB..."):
+            with st.spinner("Scanning DB + generating table descriptions..."):
                 prof = build_db_profile()
+                # 🔥 NEW: generate table descriptions using LLM
+                if st.session_state.team_ready:
+                    prof = enrich_tables_with_descriptions(prof, st.session_state.team)
+                else:
+                    st.warning("AI Team not initialized yet — table descriptions will be generated after team init.")
                 st.session_state.db_profile = prof
 
+                # persist to memory
                 cache_dir = Path(os.getenv("CACHE_DIR", "./cache"))
                 mem = MemoryStore(cache_dir)
                 mem_json = mem.load_json()
                 mem_json["db_profile"] = prof
                 mem.save_json(mem_json)
-
-            st.success(f"Scanned {len(prof.get('tables', []))} tables.")
+            st.success(f"Scanned & enriched {len(prof.get('tables', []))} tables.")
         except Exception as e:
             st.error(f"DB scan failed: {e}")
-
     if st.session_state.db_profile.get("tables"):
         st.write("**Tables discovered:**")
         st.dataframe(
