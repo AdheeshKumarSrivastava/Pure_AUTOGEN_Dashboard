@@ -82,6 +82,6 @@ def get_row_count(engine: Engine, schema: str, table: str) -> int:
     return int(df["cnt"].iloc[0]) if not df.empty else 0
 
 
-def sample_table(engine: Engine, schema: str, table: str, n: int = 100) -> pd.DataFrame:
+def sample_table(engine: Engine, schema: str, table: str, n: int = 500) -> pd.DataFrame:
     sql = f"SELECT * FROM [{schema}].[{table}]"
     return run_sql(engine, sql, limit=n)

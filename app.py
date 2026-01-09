@@ -3,6 +3,8 @@ from __future__ import annotations
 import os
 import json
 import asyncio
+import inspect
+import threading
 from pathlib import Path
 from typing import Any, Dict, Optional
 
@@ -14,13 +16,19 @@ from team_factory import build_team
 from db import build_engine, list_tables, get_columns, get_row_count, sample_table
 from memory_store import MemoryStore, safe_json_dumps  
 from prompts import STEPS
-from table_describer import build_table_description_prompt
+
 # New imports for structured execution
 from models import SQLBuildOutput,AnalysisPlan,TableDescription
 from llm_json import parse_llm_json
 from executor import execute_and_cache_artifacts
 
 from ui_formatter import beautify_step
+from models import TableDescription
+from llm_json import parse_llm_json
+from table_describer import build_table_description_prompt
+
+
+
 
 load_dotenv()
 
@@ -28,6 +36,7 @@ st.set_page_config(page_title="Agentic Analytics Team (Ollama)", layout="wide")
 
 
 # ---------- helpers ----------
+
 def ensure_session():
     if "logs" not in st.session_state:
         st.session_state.logs = []
@@ -118,7 +127,7 @@ def build_db_profile() -> Dict[str, Any]:
         except Exception:
             cnt = None
         try:
-            samp = sample_table(engine, schema, table, n=5000)
+            samp = sample_table(engine, schema, table, n=500)
         except Exception:
             samp = pd.DataFrame()
 
@@ -162,21 +171,48 @@ Rules:
 
 
 
-async def enrich_tables_with_descriptions(profile: Dict[str, Any], team) -> Dict[str, Any]:
-    for table in profile["tables"]:
-        if "table_description" in table:
+def _team_run_sync(team, prompt: str) -> str:
+    """
+    team.run() is sometimes async depending on autogen version.
+    This helper makes it safe in Streamlit (sync script).
+    """
+    resp = team.run(task=prompt)
+    resp = resolve_if_coroutine(resp)
+
+    # If autogen returns coroutine -> run it
+    if asyncio.iscoroutine(resp):
+        resp = asyncio.run(resp)
+
+    # Normalize to string content
+    if isinstance(resp, str):
+        return resp
+
+    # Many autogen messages have .content
+    content = getattr(resp, "content", None) or str(resp)
+    if content is not None:
+        return str(content)
+
+    return str(resp)
+
+
+def enrich_tables_with_descriptions(profile: Dict[str, Any], team) -> Dict[str, Any]:
+    """
+    Sync function: generates descriptions table-by-table
+    and stores them in the profile dict.
+    """
+    tables = profile.get("tables", [])
+    for table in tables:
+        if table.get("table_description"):
             continue
 
         prompt = build_table_description_prompt(table)
 
-        # ✅ IMPORTANT: await team.run
-        response = await team.run(task=prompt)
+        # Get raw LLM output (string)
+        raw = _team_run_sync(team, prompt)
 
-        # response might be message object
-        if not isinstance(response, str):
-            response = getattr(response, "content", None) or str(response)
-
-        desc = parse_llm_json(response, TableDescription).model_dump()
+        # parse_llm_json expects (text, pydantic_model) <-- only 2 args
+        desc_obj = parse_llm_json(raw, TableDescription)
+        desc = desc_obj.model_dump()
 
         table["table_description"] = desc.get("description", "")
         table["business_meaning"] = desc.get("business_meaning", "")
@@ -185,6 +221,37 @@ async def enrich_tables_with_descriptions(profile: Dict[str, Any], team) -> Dict
         table["dashboard_use_cases"] = desc.get("dashboard_use_cases", [])
 
     return profile
+
+def run_coro_sync(coro):
+    """
+    Run an async coroutine from Streamlit safely (even if an event loop is already running),
+    by executing it in a separate thread with its own event loop.
+    """
+    result = {"value": None, "error": None}
+
+    def _runner():
+        try:
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            result["value"] = loop.run_until_complete(coro)
+            loop.close()
+        except Exception as e:
+            result["error"] = e
+
+    t = threading.Thread(target=_runner, daemon=True)
+    t.start()
+    t.join()
+
+    if result["error"]:
+        raise result["error"]
+    return result["value"]
+
+
+def resolve_if_coroutine(x):
+    """If x is coroutine/awaitable -> run safely and return final value."""
+    if inspect.isawaitable(x):
+        return run_coro_sync(x)
+    return x
 
 
 # ---------- UI ----------
@@ -199,24 +266,44 @@ with left:
 
     if st.button("Scan DB (schema + samples)", type="primary"):
         try:
-            with st.spinner("Scanning DB + generating table descriptions..."):
+            with st.spinner("Scanning DB..."):
                 prof = build_db_profile()
-                # 🔥 NEW: generate table descriptions using LLM
-                if st.session_state.team_ready:
-                    prof = enrich_tables_with_descriptions(prof, st.session_state.team)
-                else:
-                    st.warning("AI Team not initialized yet — table descriptions will be generated after team init.")
-                st.session_state.db_profile = prof
+                st.session_state.db_profile = resolve_if_coroutine(prof)
 
-                # persist to memory
                 cache_dir = Path(os.getenv("CACHE_DIR", "./cache"))
                 mem = MemoryStore(cache_dir)
                 mem_json = mem.load_json()
                 mem_json["db_profile"] = prof
                 mem.save_json(mem_json)
-            st.success(f"Scanned & enriched {len(prof.get('tables', []))} tables.")
+
+            st.success(f"Scanned {len(prof.get('tables', []))} tables.")
         except Exception as e:
             st.error(f"DB scan failed: {e}")
+
+    st.session_state.db_profile = resolve_if_coroutine(st.session_state.db_profile)
+    if not isinstance(st.session_state.db_profile, dict):
+        st.error(f"db_profile is not dict, got: {type(st.session_state.db_profile)}")
+        st.stop()
+
+    if st.session_state.db_profile.get("tables"):
+        if st.button("✨ Generate Table Descriptions (LLM)"):
+            if not st.session_state.get("team_ready"):
+                st.error("Initialize AI Team first.")
+            else:
+                try:
+                    with st.spinner("Generating table descriptions..."):
+                        prof = enrich_tables_with_descriptions(st.session_state.db_profile, st.session_state.team)
+                        prof = resolve_if_coroutine(prof)
+                        st.session_state.db_profile = prof
+                    st.success("Descriptions generated ✅")
+                except Exception as e:
+                    st.error(f"Description generation failed: {e}")
+
+    st.session_state.db_profile = resolve_if_coroutine(st.session_state.db_profile)
+    if not isinstance(st.session_state.db_profile, dict):
+        st.error(f"db_profile is not dict, got: {type(st.session_state.db_profile)}")
+        st.stop()
+
     if st.session_state.db_profile.get("tables"):
         st.write("**Tables discovered:**")
         st.dataframe(

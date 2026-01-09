@@ -1,26 +1,42 @@
 from __future__ import annotations
-from typing import Dict, Any
 import json
+from typing import Any, Dict
 
+def build_table_description_prompt(table: Dict[str, Any]) -> str:
+    schema = table.get("schema")
+    name = table.get("table")
+    cols = table.get("columns", [])[:80]
+    samples = table.get("sample_rows", [])[:5]
 
-def build_table_description_prompt(table_profile: Dict[str, Any]) -> str:
+    # IMPORTANT: keep prompt compact but informative
     return f"""
-You are a senior data architect.
+You are TableDescriberAgent.
+Return ONLY valid JSON. No markdown. No commentary. No extra text.
+Do NOT include <think> tags.
+If unsure, still return best guess.
 
-Given the following database table metadata, generate:
-1. A concise human-readable description
-2. What business process it represents
-3. Typical use cases in dashboards
-4. Important columns to know
-5. Common joins (if inferable)
+JSON schema EXACTLY:
+{{
+  "description": "string (1-3 lines)",
+  "business_meaning": "string (1-3 lines)",
+  "important_columns": ["col1", "col2", "..."],
+  "typical_joins": [
+    {{
+      "to_table": "schema.table",
+      "on": ["left_col = right_col"],
+      "join_type": "left"
+    }}
+  ],
+  "dashboard_use_cases": ["use case 1", "use case 2"]
+}}
 
-TABLE_METADATA_JSON:
-{json.dumps(table_profile, indent=2)}
+TABLE:
+schema: {schema}
+table: {name}
 
-Return STRICT JSON with keys:
-- description
-- business_meaning
-- important_columns
-- typical_joins
-- dashboard_use_cases
-"""
+COLUMNS (name/type/nullability/len):
+{json.dumps(cols, indent=2)[:5000]}
+
+SAMPLE_ROWS:
+{json.dumps(samples, indent=2)[:5000]}
+""".strip()

@@ -4,38 +4,65 @@ import json
 import re
 from typing import Any, Type, TypeVar
 
-from pydantic import BaseModel, ValidationError
+from pydantic import BaseModel
 
 T = TypeVar("T", bound=BaseModel)
 
 
-def extract_json_block(text: str) -> str:
+_THINK_RE = re.compile(r"<think>.*?</think>", flags=re.DOTALL | re.IGNORECASE)
+_CODE_FENCE_RE = re.compile(r"```(?:json)?\s*(.*?)```", flags=re.DOTALL | re.IGNORECASE)
+
+
+def _strip_think(text: str) -> str:
+    return _THINK_RE.sub("", text or "").strip()
+
+
+def _extract_json_candidate(text: str) -> str:
     """
-    Tries to pull a JSON object from:
-    - ```json ... ```
-    - { ... } first JSON object
+    Try, in order:
+    1) JSON inside ```json ... ```
+    2) first {...} object
+    3) first [...] array
     """
-    # fenced block
-    m = re.search(r"```json\s*([\s\S]*?)```", text, flags=re.IGNORECASE)
+    t = _strip_think(text)
+
+    # 1) fenced
+    m = _CODE_FENCE_RE.search(t)
     if m:
-        return m.group(1).strip()
+        candidate = m.group(1).strip()
+        if candidate:
+            return candidate
 
-    # any object block from first { to last }
-    m2 = re.search(r"(\{[\s\S]*\})", text)
-    if m2:
-        return m2.group(1).strip()
+    # 2) first object
+    obj_start = t.find("{")
+    obj_end = t.rfind("}")
+    if obj_start != -1 and obj_end != -1 and obj_end > obj_start:
+        return t[obj_start : obj_end + 1].strip()
 
-    raise ValueError("No JSON found in model output.")
+    # 3) first array
+    arr_start = t.find("[")
+    arr_end = t.rfind("]")
+    if arr_start != -1 and arr_end != -1 and arr_end > arr_start:
+        return t[arr_start : arr_end + 1].strip()
+
+    return t # fallback (will likely fail, but gives visibility)
 
 
 def parse_llm_json(text: str, model: Type[T]) -> T:
-    raw = extract_json_block(text)
-    try:
-        data = json.loads(raw)
-    except json.JSONDecodeError as e:
-        raise ValueError(f"Invalid JSON from model: {e}") from e
+    """
+    Strict: returns a Pydantic model instance.
+    Robust: strips <think>, extracts JSON block if present.
+    """
+    candidate = _extract_json_candidate(text)
+
+    if not candidate or candidate.strip() == "":
+        raise ValueError("Invalid JSON from model: empty response")
 
     try:
-        return model.model_validate(data)
-    except ValidationError as e:
-        raise ValueError(f"JSON does not match expected schema: {e}") from e
+        data = json.loads(candidate)
+    except Exception as e:
+        # Helpful debug snippet
+        snippet = candidate[:500].replace("\n", "\\n")
+        raise ValueError(f"Invalid JSON from model: {e}. Candidate starts with: {snippet}") from e
+
+    return model.model_validate(data)
