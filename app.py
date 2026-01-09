@@ -14,9 +14,9 @@ from team_factory import build_team
 from db import build_engine, list_tables, get_columns, get_row_count, sample_table
 from memory_store import MemoryStore, safe_json_dumps  # <-- IMPORTANT
 from prompts import STEPS
-
+from table_describer import build_table_description_prompt
 # New imports for structured execution
-from models import SQLBuildOutput,AnalysisPlan
+from models import SQLBuildOutput,AnalysisPlan,TableDescription
 from llm_json import parse_llm_json
 from executor import execute_and_cache_artifacts
 
@@ -160,8 +160,7 @@ Rules:
 - Do NOT proceed to other steps.
 """
 
-from table_describer import build_table_description_prompt
-from llm_json import parse_llm_json
+
 
 def enrich_tables_with_descriptions(profile: Dict[str, Any], team) -> Dict[str, Any]:
     for table in profile["tables"]:
@@ -173,7 +172,7 @@ def enrich_tables_with_descriptions(profile: Dict[str, Any], team) -> Dict[str, 
         # Use the SAME team / model
         response = team.run(task=prompt)
 
-        desc = parse_llm_json(response, dict)
+        desc = parse_llm_json(response,TableDescription, dict)
 
         table["table_description"] = desc["description"]
         table["business_meaning"] = desc["business_meaning"]

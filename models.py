@@ -93,3 +93,10 @@ class KPIReport(BaseModel):
 class ExecutionBundle(BaseModel):
     datasets: List[DatasetSummary]
     reports: List[KPIReport]
+
+class TableDescription(BaseModel):
+    description:str
+    business_meaning:str
+    important_columns:List[str]
+    typical_joins:List[str]
+    dashboard_use_cases:List[str]
