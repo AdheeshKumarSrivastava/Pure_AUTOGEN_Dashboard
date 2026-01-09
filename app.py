@@ -282,6 +282,27 @@ for i, (k, _) in enumerate(STEPS):
     with tabs[i]:
         render_logs(k)
 
+#----------------------Table Description -----------------------------
+st.markdown("## 📚 Data Catalog")
+
+for t in st.session_state.db_profile.get("tables", []):
+    with st.expander(f"📄 {t['schema']}.{t['table']}"):
+        st.markdown(f"**Description**: {t.get('table_description', '—')}")
+        st.markdown(f"**Business Meaning**: {t.get('business_meaning', '—')}")
+
+        if t.get("important_columns"):
+            st.markdown("**Important Columns**")
+            st.write(", ".join(t["important_columns"]))
+
+        if t.get("dashboard_use_cases"):
+            st.markdown("**Dashboard Use Cases**")
+            for uc in t["dashboard_use_cases"]:
+                st.markdown(f"- {uc}")
+
+        if t.get("typical_joins"):
+            st.markdown("**Typical Joins**")
+            for j in t["typical_joins"]:
+                st.markdown(f"- {j}")
 # ----------------- Task-4/5 execution -----------------
 st.markdown("---")
 st.subheader("🚀 Task-4/5 Execution (Real): SQL → Cache → KPIs → Feed Dashboard")
